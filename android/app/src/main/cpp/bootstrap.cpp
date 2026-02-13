@@ -485,7 +485,7 @@ namespace
             const std::uint32_t r = static_cast<std::uint32_t>(toByte(red));
             const std::uint32_t g = static_cast<std::uint32_t>(toByte(green));
             const std::uint32_t b = static_cast<std::uint32_t>(toByte(blue));
-            return 0xFF000000U | (r << 16U) | (g << 8U) | b;
+            return 0xFF000000U | (b << 16U) | (g << 8U) | r;
         }
 
         int clampX(int x) const
@@ -523,18 +523,18 @@ namespace
             }
 
             std::uint32_t &dst = pixels_[y * buffer_.stride + x];
-            const std::uint8_t dstR = static_cast<std::uint8_t>((dst >> 16U) & 0xFFU);
+            const std::uint8_t dstR = static_cast<std::uint8_t>(dst & 0xFFU);
             const std::uint8_t dstG = static_cast<std::uint8_t>((dst >> 8U) & 0xFFU);
-            const std::uint8_t dstB = static_cast<std::uint8_t>(dst & 0xFFU);
+            const std::uint8_t dstB = static_cast<std::uint8_t>((dst >> 16U) & 0xFFU);
 
             const int a = static_cast<int>(alpha);
             const std::uint8_t outR = static_cast<std::uint8_t>((srcR * a + dstR * (255 - a)) / 255);
             const std::uint8_t outG = static_cast<std::uint8_t>((srcG * a + dstG * (255 - a)) / 255);
             const std::uint8_t outB = static_cast<std::uint8_t>((srcB * a + dstB * (255 - a)) / 255);
 
-            dst = 0xFF000000U | (static_cast<std::uint32_t>(outR) << 16U) |
+            dst = 0xFF000000U | (static_cast<std::uint32_t>(outB) << 16U) |
                   (static_cast<std::uint32_t>(outG) << 8U) |
-                  static_cast<std::uint32_t>(outB);
+                  static_cast<std::uint32_t>(outR);
         }
 
         struct GlyphBitmap
