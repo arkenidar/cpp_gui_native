@@ -161,6 +161,16 @@ namespace
     class AndroidSoftwareRenderer final : public IRenderer
     {
     public:
+        void setUiScale(float scale)
+        {
+            uiScale_ = std::max(1.0F, scale);
+            if (fontReady_)
+            {
+                glyphCache_.clear();
+                updateFontScale();
+            }
+        }
+
         void setFontPath(const std::filesystem::path &fontPath, float pixelSize)
         {
             fontReady_ = false;
@@ -194,7 +204,7 @@ namespace
             }
 
             fontPixelSize_ = pixelSize;
-            fontScale_ = stbtt_ScaleForPixelHeight(&fontInfo_, fontPixelSize_);
+            updateFontScale();
             stbtt_GetFontVMetrics(&fontInfo_, &fontAscent_, &fontDescent_, &fontLineGap_);
             fontReady_ = true;
         }
@@ -253,6 +263,10 @@ namespace
                 return;
             }
 
+            const float pxCenterX = toPx(centerX);
+            const float pxCenterY = toPx(centerY);
+            const float pxRadius = toPx(radius);
+
             constexpr float pi = 3.1415926535F;
             const int segments = 64;
             const float step = (2.0F * pi) / static_cast<float>(segments);
@@ -262,10 +276,10 @@ namespace
             {
                 const float a0 = static_cast<float>(i) * step;
                 const float a1 = static_cast<float>(i + 1) * step;
-                drawLineInternal(centerX + std::cos(a0) * radius,
-                                 centerY + std::sin(a0) * radius,
-                                 centerX + std::cos(a1) * radius,
-                                 centerY + std::sin(a1) * radius,
+                drawLineInternal(pxCenterX + std::cos(a0) * pxRadius,
+                                 pxCenterY + std::sin(a0) * pxRadius,
+                                 pxCenterX + std::cos(a1) * pxRadius,
+                                 pxCenterY + std::sin(a1) * pxRadius,
                                  color);
             }
         }
@@ -277,19 +291,23 @@ namespace
                 return;
             }
 
+            const float pxCenterX = toPx(centerX);
+            const float pxCenterY = toPx(centerY);
+            const float pxRadius = toPx(radius);
+
             const std::uint32_t color = packColor(red, green, blue);
-            const int minY = static_cast<int>(std::floor(centerY - radius));
-            const int maxY = static_cast<int>(std::ceil(centerY + radius));
+            const int minY = static_cast<int>(std::floor(pxCenterY - pxRadius));
+            const int maxY = static_cast<int>(std::ceil(pxCenterY + pxRadius));
             for (int y = minY; y <= maxY; ++y)
             {
-                const float dy = static_cast<float>(y) - centerY;
-                const float inside = radius * radius - dy * dy;
+                const float dy = static_cast<float>(y) - pxCenterY;
+                const float inside = pxRadius * pxRadius - dy * dy;
                 if (inside < 0.0F)
                 {
                     continue;
                 }
                 const float dx = std::sqrt(inside);
-                drawLineInternal(centerX - dx, static_cast<float>(y), centerX + dx, static_cast<float>(y), color);
+                drawLineInternal(pxCenterX - dx, static_cast<float>(y), pxCenterX + dx, static_cast<float>(y), color);
             }
         }
 
@@ -300,13 +318,17 @@ namespace
                 return;
             }
 
+            const float pxX = toPx(x);
+            const float pxY = toPx(y);
+            const float pxWidth = toPx(width);
+            const float pxHeight = toPx(height);
             const std::uint32_t color = packColor(red, green, blue);
-            const float x2 = x + width;
-            const float y2 = y + height;
-            drawLineInternal(x, y, x2, y, color);
-            drawLineInternal(x2, y, x2, y2, color);
-            drawLineInternal(x2, y2, x, y2, color);
-            drawLineInternal(x, y2, x, y, color);
+            const float x2 = pxX + pxWidth;
+            const float y2 = pxY + pxHeight;
+            drawLineInternal(pxX, pxY, x2, pxY, color);
+            drawLineInternal(x2, pxY, x2, y2, color);
+            drawLineInternal(x2, y2, pxX, y2, color);
+            drawLineInternal(pxX, y2, pxX, pxY, color);
         }
 
         void fillRect(float x, float y, float width, float height, float red, float green, float blue) override
@@ -316,10 +338,14 @@ namespace
                 return;
             }
 
-            const int x0 = clampX(static_cast<int>(std::floor(x)));
-            const int y0 = clampY(static_cast<int>(std::floor(y)));
-            const int x1 = clampX(static_cast<int>(std::ceil(x + width)));
-            const int y1 = clampY(static_cast<int>(std::ceil(y + height)));
+            const float pxX = toPx(x);
+            const float pxY = toPx(y);
+            const float pxWidth = toPx(width);
+            const float pxHeight = toPx(height);
+            const int x0 = clampX(static_cast<int>(std::floor(pxX)));
+            const int y0 = clampY(static_cast<int>(std::floor(pxY)));
+            const int x1 = clampX(static_cast<int>(std::ceil(pxX + pxWidth)));
+            const int y1 = clampY(static_cast<int>(std::ceil(pxY + pxHeight)));
             const std::uint32_t color = packColor(red, green, blue);
 
             for (int yy = y0; yy <= y1; ++yy)
@@ -338,7 +364,7 @@ namespace
                 return;
             }
 
-            drawLineInternal(x1, y1, x2, y2, packColor(red, green, blue));
+            drawLineInternal(toPx(x1), toPx(y1), toPx(x2), toPx(y2), packColor(red, green, blue));
         }
 
         void drawText(float x, float y, const std::string &text, float red, float green, float blue) override
@@ -348,17 +374,34 @@ namespace
                 return;
             }
 
+            const float pxX = toPx(x);
+            const float pxY = toPx(y);
+
             if (!fontReady_)
             {
-                int cursorX = static_cast<int>(x);
-                const int baseline = static_cast<int>(y);
+                int cursorX = static_cast<int>(pxX);
+                const int baseline = static_cast<int>(pxY);
                 for (char ch : text)
                 {
                     if (ch != ' ')
                     {
-                        fillRect(static_cast<float>(cursorX), static_cast<float>(baseline - 8), 4.0F, 8.0F, red, green, blue);
+                        const float barW = std::max(1.0F, std::floor(4.0F * uiScale_));
+                        const float barH = std::max(1.0F, std::floor(8.0F * uiScale_));
+                        const float barY = static_cast<float>(baseline) - barH;
+                        const int x0 = clampX(static_cast<int>(std::floor(static_cast<float>(cursorX))));
+                        const int y0 = clampY(static_cast<int>(std::floor(barY)));
+                        const int x1 = clampX(static_cast<int>(std::ceil(static_cast<float>(cursorX) + barW)));
+                        const int y1 = clampY(static_cast<int>(std::ceil(barY + barH)));
+                        const std::uint32_t color = packColor(red, green, blue);
+                        for (int yy = y0; yy <= y1; ++yy)
+                        {
+                            for (int xx = x0; xx <= x1; ++xx)
+                            {
+                                putPixel(xx, yy, color);
+                            }
+                        }
                     }
-                    cursorX += 6;
+                    cursorX += static_cast<int>(std::max(1.0F, std::floor(6.0F * uiScale_)));
                 }
                 return;
             }
@@ -367,8 +410,8 @@ namespace
             const std::uint8_t srcG = toByte(green);
             const std::uint8_t srcB = toByte(blue);
 
-            float penX = x;
-            const float baseline = y + fontPixelSize_;
+            float penX = pxX;
+            const float baseline = pxY + fontPixelSizePx_;
             std::size_t offset = 0;
 
             while (offset < text.size())
@@ -430,6 +473,11 @@ namespace
         {
             const float clamped = std::clamp(value, 0.0F, 1.0F);
             return static_cast<std::uint8_t>(clamped * 255.0F);
+        }
+
+        float toPx(float value) const
+        {
+            return value * uiScale_;
         }
 
         static std::uint32_t packColor(float red, float green, float blue)
@@ -514,7 +562,7 @@ namespace
             glyph.advance = static_cast<int>(std::lround(fontScale_ * static_cast<float>(advance)));
             if (glyph.advance <= 0)
             {
-                glyph.advance = static_cast<int>(std::lround(fontPixelSize_ * 0.5F));
+                glyph.advance = static_cast<int>(std::lround(fontPixelSizePx_ * 0.5F));
             }
 
             unsigned char *bitmap = stbtt_GetCodepointBitmap(&fontInfo_, 0.0F, fontScale_, codepoint,
@@ -529,6 +577,12 @@ namespace
             auto [insertedIt, inserted] = glyphCache_.emplace(codepoint, std::move(glyph));
             (void)inserted;
             return insertedIt->second;
+        }
+
+        void updateFontScale()
+        {
+            fontPixelSizePx_ = std::max(1.0F, fontPixelSize_ * uiScale_);
+            fontScale_ = stbtt_ScaleForPixelHeight(&fontInfo_, fontPixelSizePx_);
         }
 
         static std::size_t decodeUtf8Codepoint(const std::string &text, std::size_t offset, int &codepoint)
@@ -611,12 +665,14 @@ namespace
         std::uint32_t *pixels_ = nullptr;
         int width_ = 0;
         int height_ = 0;
+        float uiScale_ = 1.0F;
         stbtt_fontinfo fontInfo_{};
         std::vector<unsigned char> fontFileData_;
         std::unordered_map<int, GlyphBitmap> glyphCache_;
         bool fontReady_ = false;
         float fontScale_ = 1.0F;
         float fontPixelSize_ = 16.0F;
+        float fontPixelSizePx_ = 16.0F;
         int fontAscent_ = 0;
         int fontDescent_ = 0;
         int fontLineGap_ = 0;
@@ -778,6 +834,58 @@ namespace
             softInputVisible = visible;
         }
 
+        float queryUiScale() const
+        {
+            if (activity == nullptr || activity->vm == nullptr || activity->clazz == nullptr)
+            {
+                return 1.0F;
+            }
+
+            JNIEnv *env = nullptr;
+            bool detachThread = false;
+            if (activity->vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK)
+            {
+                if (activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
+                {
+                    return 1.0F;
+                }
+                detachThread = true;
+            }
+
+            float density = 1.0F;
+            jobject nativeActivity = activity->clazz;
+            jclass activityClass = env->GetObjectClass(nativeActivity);
+            jmethodID getResourcesMethod = env->GetMethodID(activityClass, "getResources", "()Landroid/content/res/Resources;");
+            jobject resources = env->CallObjectMethod(nativeActivity, getResourcesMethod);
+            if (resources != nullptr)
+            {
+                jclass resourcesClass = env->GetObjectClass(resources);
+                jmethodID getDisplayMetricsMethod = env->GetMethodID(resourcesClass, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;");
+                jobject displayMetrics = env->CallObjectMethod(resources, getDisplayMetricsMethod);
+                if (displayMetrics != nullptr)
+                {
+                    jclass metricsClass = env->GetObjectClass(displayMetrics);
+                    jfieldID densityField = env->GetFieldID(metricsClass, "density", "F");
+                    if (densityField != nullptr)
+                    {
+                        density = static_cast<float>(env->GetFloatField(displayMetrics, densityField));
+                    }
+                    env->DeleteLocalRef(metricsClass);
+                    env->DeleteLocalRef(displayMetrics);
+                }
+                env->DeleteLocalRef(resourcesClass);
+                env->DeleteLocalRef(resources);
+            }
+            env->DeleteLocalRef(activityClass);
+
+            if (detachThread)
+            {
+                activity->vm->DetachCurrentThread();
+            }
+
+            return std::max(1.0F, density);
+        }
+
         void run()
         {
             ALooper *looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
@@ -786,6 +894,10 @@ namespace
                 __android_log_print(ANDROID_LOG_ERROR, "GUI_CPP", "Failed to prepare looper");
                 return;
             }
+
+            uiScale = queryUiScale();
+            renderer.setUiScale(uiScale);
+            __android_log_print(ANDROID_LOG_INFO, "GUI_CPP", "Android UI scale: %.2f", uiScale);
 
             if (!fontPath.empty())
             {
@@ -835,7 +947,11 @@ namespace
                         renderer.setWindow(activeWindow);
                         if (activeWindow != nullptr)
                         {
-                            appCore.onResize(ANativeWindow_getWidth(activeWindow), ANativeWindow_getHeight(activeWindow));
+                            const int windowWidth = ANativeWindow_getWidth(activeWindow);
+                            const int windowHeight = ANativeWindow_getHeight(activeWindow);
+                            const int logicalWidth = std::max(1, static_cast<int>(std::lround(static_cast<float>(windowWidth) / uiScale)));
+                            const int logicalHeight = std::max(1, static_cast<int>(std::lround(static_cast<float>(windowHeight) / uiScale)));
+                            appCore.onResize(logicalWidth, logicalHeight);
                         }
                         windowDirty = false;
                     }
@@ -909,8 +1025,8 @@ namespace
                     }
                 }
 
-                inputState.mouseX = touchX;
-                inputState.mouseY = touchY;
+                inputState.mouseX = touchX / uiScale;
+                inputState.mouseY = touchY / uiScale;
                 inputState.mouseDown = touchDown;
 
                 const auto now = std::chrono::steady_clock::now();
@@ -953,6 +1069,7 @@ namespace
         bool touchDown = false;
         float touchX = 0.0F;
         float touchY = 0.0F;
+        float uiScale = 1.0F;
         bool softInputVisible = false;
     };
 
