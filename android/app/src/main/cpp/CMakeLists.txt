@@ -16,14 +16,14 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/ThePhD/sol2.git
     GIT_TAG v3.5.0
 )
-FetchContent_MakeAvailable(sol2)
+FetchContent_GetProperties(sol2)
+if(NOT sol2_POPULATED)
+    FetchContent_Populate(sol2)
+endif()
 
-if(TARGET sol2::sol2)
-    set(SOL2_TARGET sol2::sol2)
-elseif(TARGET sol2::sol2_header_only)
-    set(SOL2_TARGET sol2::sol2_header_only)
-else()
-    message(FATAL_ERROR "No compatible sol2 target found")
+if(NOT TARGET guicpp_sol2_headers)
+    add_library(guicpp_sol2_headers INTERFACE)
+    target_include_directories(guicpp_sol2_headers INTERFACE ${sol2_SOURCE_DIR}/include)
 endif()
 
 FetchContent_Declare(
@@ -50,6 +50,6 @@ find_library(log-lib log)
 target_link_libraries(guicpp_native PRIVATE
     android
     ${log-lib}
-    ${SOL2_TARGET}
+    guicpp_sol2_headers
     ${LUA_TARGET}
 )
