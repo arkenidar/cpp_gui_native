@@ -3,9 +3,15 @@ project(guicpp_native LANGUAGES CXX)
 
 add_library(guicpp_native SHARED
     bootstrap.cpp
+    ScriptEngineStub.cpp
+    ../../../../../native/core/AppCore.cpp
 )
 
 target_compile_features(guicpp_native PRIVATE cxx_std_20)
+
+target_include_directories(guicpp_native PRIVATE
+    ../../../../../native
+)
 
 find_library(log-lib log)
 
