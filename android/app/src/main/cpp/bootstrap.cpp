@@ -47,6 +47,14 @@ namespace
 
         if (keycode >= AKEYCODE_0 && keycode <= AKEYCODE_9)
         {
+            static constexpr char shiftedDigits[] = {
+                ')', '!', '@', '#', '$', '%', '^', '&', '*', '('};
+
+            if (shifted)
+            {
+                return std::string(1, shiftedDigits[keycode - AKEYCODE_0]);
+            }
+
             return std::string(1, static_cast<char>('0' + (keycode - AKEYCODE_0)));
         }
 
@@ -54,20 +62,36 @@ namespace
         {
         case AKEYCODE_SPACE:
             return " ";
+        case AKEYCODE_AT:
+            return "@";
+        case AKEYCODE_POUND:
+            return "#";
+        case AKEYCODE_STAR:
+            return "*";
+        case AKEYCODE_PLUS:
+            return "+";
         case AKEYCODE_PERIOD:
-            return ".";
+            return shifted ? ">" : ".";
         case AKEYCODE_COMMA:
-            return ",";
+            return shifted ? "<" : ",";
         case AKEYCODE_MINUS:
-            return "-";
+            return shifted ? "_" : "-";
         case AKEYCODE_EQUALS:
-            return "=";
+            return shifted ? "+" : "=";
         case AKEYCODE_SEMICOLON:
-            return ";";
+            return shifted ? ":" : ";";
         case AKEYCODE_APOSTROPHE:
-            return "'";
+            return shifted ? "\"" : "'";
         case AKEYCODE_SLASH:
-            return "/";
+            return shifted ? "?" : "/";
+        case AKEYCODE_GRAVE:
+            return shifted ? "~" : "`";
+        case AKEYCODE_LEFT_BRACKET:
+            return shifted ? "{" : "[";
+        case AKEYCODE_RIGHT_BRACKET:
+            return shifted ? "}" : "]";
+        case AKEYCODE_BACKSLASH:
+            return shifted ? "|" : "\\";
         default:
             return "";
         }
