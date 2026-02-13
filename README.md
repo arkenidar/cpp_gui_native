@@ -93,9 +93,23 @@ cmake --build build
 ## Android / NDK scaffold
 - A minimal Android NativeActivity scaffold is available under [android](android).
 - Open [android](android) in Android Studio and let Gradle sync.
+- In Android Studio, use the Gradle Wrapper from the project (do not force a local Gradle 9+ install).
 - Build/run the `app` module (arm64-v8a).
 - Native bootstrap target is defined in [android/app/src/main/cpp/CMakeLists.txt](android/app/src/main/cpp/CMakeLists.txt).
-- Current scaffold is intentionally minimal (launch + native library wiring) and ready for incremental integration of the shared core.
+- Shared core wiring is now connected incrementally (`AppCore` linked into Android target) using a temporary Android script-engine stub in [android/app/src/main/cpp/ScriptEngineStub.cpp](android/app/src/main/cpp/ScriptEngineStub.cpp).
+- Current scaffold is intentionally minimal and ready for the next pass: replacing the stub with real Lua/sol2 runtime on Android.
+
+### Android text input / OSK note (SDL + NDK)
+- Yes, for text widgets on Android you should use the on-screen keyboard (OSK).
+- In SDL, show keyboard on text-focus by calling `SDL_StartTextInput(window)` and hide it on blur with `SDL_StopTextInput(window)`.
+- Continue handling text through `SDL_EVENT_TEXT_INPUT`; keep key events for control keys (Backspace/Enter/etc).
+- If no text field is focused, keep OSK hidden.
+- If you add custom caret/selection UX, also update text-input area as needed (`SDL_SetTextInputArea`) so IME behavior stays correct.
+
+### Immediate next Android pass
+- Replace [android/app/src/main/cpp/ScriptEngineStub.cpp](android/app/src/main/cpp/ScriptEngineStub.cpp) with real Lua/sol2-backed `ScriptEngine` on Android.
+- Add Android asset loading for `assets/scripts/main.lua` and related resources.
+- Introduce SDL Android host path and wire focus-driven OSK behavior for text widgets.
 
 ## Next step
 Add renderer abstraction improvements and optional GPU path while preserving `IRenderer` API.
