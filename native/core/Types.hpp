@@ -49,5 +49,7 @@ struct FrameState
     float bgG = 0.10F;
     float bgB = 0.14F;
 
+    bool textInputActive = false;
+
     std::vector<DrawCommand> drawCommands;
 };

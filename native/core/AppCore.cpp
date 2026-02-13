@@ -95,3 +95,8 @@ int AppCore::scriptVersion() const
 {
     return scriptEngine_.scriptVersion();
 }
+
+bool AppCore::textInputActive() const
+{
+    return frameState_.textInputActive;
+}

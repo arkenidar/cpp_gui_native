@@ -16,6 +16,7 @@ public:
 
     [[nodiscard]] const std::string &lastError() const;
     [[nodiscard]] int scriptVersion() const;
+    [[nodiscard]] bool textInputActive() const;
 
 private:
     IRenderer *renderer_ = nullptr;

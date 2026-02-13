@@ -167,6 +167,7 @@ void ScriptEngine::update(float deltaSeconds, const InputState &inputState, Fram
     frameState.bgR = numberOr(frameState.bgR, state, "bg_r");
     frameState.bgG = numberOr(frameState.bgG, state, "bg_g");
     frameState.bgB = numberOr(frameState.bgB, state, "bg_b");
+    frameState.textInputActive = boolOr(frameState.textInputActive, state, "text_input_active");
 
     frameState.drawCommands.clear();
     sol::optional<sol::table> maybeCommands = state["draw_commands"];

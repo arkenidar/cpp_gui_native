@@ -418,6 +418,8 @@ function update(dt, input)
         state.theme_dark = not state.theme_dark
     end
 
+    state.text_input_active = any_text_widget_focused(state.widgets)
+
     apply_auto_layout(state.widgets, state.layout, state.design)
 
     local theme = state.theme_dark and themes.dark or themes.light

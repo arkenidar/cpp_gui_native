@@ -94,11 +94,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (!SDL_StartTextInput(window))
-    {
-        std::cerr << "Text input init failed: " << SDL_GetError() << '\n';
-    }
-
     RendererSdl renderer(sdlRenderer);
     AppCore appCore;
     const std::filesystem::path scriptPath = resolveScriptPath();
@@ -121,6 +116,7 @@ int main(int argc, char **argv)
     bool running = true;
     InputState inputState;
     std::string lastReportedError;
+    bool textInputActive = false;
 
     std::uint64_t previousCounter = SDL_GetTicks();
 
@@ -186,6 +182,23 @@ int main(int argc, char **argv)
 
         appCore.tick(deltaSeconds, inputState);
 
+        const bool wantTextInput = appCore.textInputActive();
+        if (wantTextInput != textInputActive)
+        {
+            if (wantTextInput)
+            {
+                if (!SDL_StartTextInput(window))
+                {
+                    std::cerr << "Text input start failed: " << SDL_GetError() << '\n';
+                }
+            }
+            else
+            {
+                SDL_StopTextInput(window);
+            }
+            textInputActive = wantTextInput;
+        }
+
         const int currentScriptVersion = appCore.scriptVersion();
         if (currentScriptVersion != shownScriptVersion)
         {
@@ -202,7 +215,10 @@ int main(int argc, char **argv)
         SDL_Delay(1);
     }
 
-    SDL_StopTextInput(window);
+    if (textInputActive)
+    {
+        SDL_StopTextInput(window);
+    }
     SDL_DestroyRenderer(sdlRenderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
