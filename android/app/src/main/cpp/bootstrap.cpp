@@ -2,16 +2,77 @@
 #include <android/native_activity.h>
 
 #include <android/asset_manager.h>
+#include <android/input.h>
+#include <android/looper.h>
+#include <android/native_window.h>
 
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <jni.h>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
+
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>
 
 #include "core/AppCore.hpp"
 
 namespace
 {
+    constexpr int kLooperInputId = 1;
+
+    std::string keycodeToText(int keycode, int metaState)
+    {
+        const bool shifted = (metaState & AMETA_SHIFT_ON) != 0 ||
+                             (metaState & AMETA_SHIFT_LEFT_ON) != 0 ||
+                             (metaState & AMETA_SHIFT_RIGHT_ON) != 0;
+
+        if (keycode >= AKEYCODE_A && keycode <= AKEYCODE_Z)
+        {
+            char character = static_cast<char>('a' + (keycode - AKEYCODE_A));
+            if (shifted)
+            {
+                character = static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+            }
+            return std::string(1, character);
+        }
+
+        if (keycode >= AKEYCODE_0 && keycode <= AKEYCODE_9)
+        {
+            return std::string(1, static_cast<char>('0' + (keycode - AKEYCODE_0)));
+        }
+
+        switch (keycode)
+        {
+        case AKEYCODE_SPACE:
+            return " ";
+        case AKEYCODE_PERIOD:
+            return ".";
+        case AKEYCODE_COMMA:
+            return ",";
+        case AKEYCODE_MINUS:
+            return "-";
+        case AKEYCODE_EQUALS:
+            return "=";
+        case AKEYCODE_SEMICOLON:
+            return ";";
+        case AKEYCODE_APOSTROPHE:
+            return "'";
+        case AKEYCODE_SLASH:
+            return "/";
+        default:
+            return "";
+        }
+    }
+
     bool extractAssetToFile(ANativeActivity *activity, const char *assetPath, const std::filesystem::path &destPath)
     {
         if (activity == nullptr || activity->assetManager == nullptr)
@@ -77,91 +138,876 @@ namespace
         return scriptPath;
     }
 
-    class NullRenderer final : public IRenderer
+    std::filesystem::path prepareFontPath(ANativeActivity *activity)
     {
-    public:
-        void resize(int width, int height) override
+        if (activity == nullptr || activity->internalDataPath == nullptr)
         {
-            (void)width;
-            (void)height;
+            return {};
         }
 
-        void beginFrame() override {}
+        const std::filesystem::path internalDataPath(activity->internalDataPath);
+        const std::filesystem::path fontPath = internalDataPath / "fonts" / "UiFont.ttf";
+        const bool extracted = extractAssetToFile(activity, "fonts/UiFont.ttf", fontPath);
+        if (!extracted)
+        {
+            __android_log_print(ANDROID_LOG_ERROR, "GUI_CPP", "Failed to extract asset fonts/UiFont.ttf");
+            return {};
+        }
+
+        __android_log_print(ANDROID_LOG_INFO, "GUI_CPP", "UI font prepared: %s", fontPath.string().c_str());
+        return fontPath;
+    }
+
+    class AndroidSoftwareRenderer final : public IRenderer
+    {
+    public:
+        void setFontPath(const std::filesystem::path &fontPath, float pixelSize)
+        {
+            fontReady_ = false;
+            glyphCache_.clear();
+            fontFileData_.clear();
+
+            std::ifstream in(fontPath, std::ios::binary | std::ios::ate);
+            if (!in.good())
+            {
+                return;
+            }
+
+            const std::streamsize size = in.tellg();
+            if (size <= 0)
+            {
+                return;
+            }
+
+            in.seekg(0, std::ios::beg);
+            fontFileData_.resize(static_cast<size_t>(size));
+            if (!in.read(reinterpret_cast<char *>(fontFileData_.data()), size))
+            {
+                fontFileData_.clear();
+                return;
+            }
+
+            if (!stbtt_InitFont(&fontInfo_, fontFileData_.data(), 0))
+            {
+                fontFileData_.clear();
+                return;
+            }
+
+            fontPixelSize_ = pixelSize;
+            fontScale_ = stbtt_ScaleForPixelHeight(&fontInfo_, fontPixelSize_);
+            stbtt_GetFontVMetrics(&fontInfo_, &fontAscent_, &fontDescent_, &fontLineGap_);
+            fontReady_ = true;
+        }
+
+        void setWindow(ANativeWindow *window)
+        {
+            window_ = window;
+            if (window_ != nullptr)
+            {
+                ANativeWindow_setBuffersGeometry(window_, 0, 0, WINDOW_FORMAT_RGBA_8888);
+            }
+        }
+
+        void resize(int width, int height) override
+        {
+            width_ = width;
+            height_ = height;
+        }
+
+        void beginFrame() override
+        {
+            if (window_ == nullptr)
+            {
+                pixels_ = nullptr;
+                return;
+            }
+
+            if (ANativeWindow_lock(window_, &buffer_, nullptr) != 0)
+            {
+                pixels_ = nullptr;
+                return;
+            }
+
+            pixels_ = static_cast<std::uint32_t *>(buffer_.bits);
+        }
+
         void clear(float red, float green, float blue) override
         {
-            (void)red;
-            (void)green;
-            (void)blue;
+            if (pixels_ == nullptr)
+            {
+                return;
+            }
+
+            const std::uint32_t color = packColor(red, green, blue);
+            for (int y = 0; y < buffer_.height; ++y)
+            {
+                std::uint32_t *row = pixels_ + y * buffer_.stride;
+                std::fill(row, row + buffer_.width, color);
+            }
         }
 
         void drawCircle(float centerX, float centerY, float radius, float red, float green, float blue) override
         {
-            (void)centerX;
-            (void)centerY;
-            (void)radius;
-            (void)red;
-            (void)green;
-            (void)blue;
+            if (pixels_ == nullptr)
+            {
+                return;
+            }
+
+            constexpr float pi = 3.1415926535F;
+            const int segments = 64;
+            const float step = (2.0F * pi) / static_cast<float>(segments);
+            const std::uint32_t color = packColor(red, green, blue);
+
+            for (int i = 0; i < segments; ++i)
+            {
+                const float a0 = static_cast<float>(i) * step;
+                const float a1 = static_cast<float>(i + 1) * step;
+                drawLineInternal(centerX + std::cos(a0) * radius,
+                                 centerY + std::sin(a0) * radius,
+                                 centerX + std::cos(a1) * radius,
+                                 centerY + std::sin(a1) * radius,
+                                 color);
+            }
         }
 
         void fillCircle(float centerX, float centerY, float radius, float red, float green, float blue) override
         {
-            (void)centerX;
-            (void)centerY;
-            (void)radius;
-            (void)red;
-            (void)green;
-            (void)blue;
+            if (pixels_ == nullptr)
+            {
+                return;
+            }
+
+            const std::uint32_t color = packColor(red, green, blue);
+            const int minY = static_cast<int>(std::floor(centerY - radius));
+            const int maxY = static_cast<int>(std::ceil(centerY + radius));
+            for (int y = minY; y <= maxY; ++y)
+            {
+                const float dy = static_cast<float>(y) - centerY;
+                const float inside = radius * radius - dy * dy;
+                if (inside < 0.0F)
+                {
+                    continue;
+                }
+                const float dx = std::sqrt(inside);
+                drawLineInternal(centerX - dx, static_cast<float>(y), centerX + dx, static_cast<float>(y), color);
+            }
         }
 
         void drawRect(float x, float y, float width, float height, float red, float green, float blue) override
         {
-            (void)x;
-            (void)y;
-            (void)width;
-            (void)height;
-            (void)red;
-            (void)green;
-            (void)blue;
+            if (pixels_ == nullptr)
+            {
+                return;
+            }
+
+            const std::uint32_t color = packColor(red, green, blue);
+            const float x2 = x + width;
+            const float y2 = y + height;
+            drawLineInternal(x, y, x2, y, color);
+            drawLineInternal(x2, y, x2, y2, color);
+            drawLineInternal(x2, y2, x, y2, color);
+            drawLineInternal(x, y2, x, y, color);
         }
 
         void fillRect(float x, float y, float width, float height, float red, float green, float blue) override
         {
-            (void)x;
-            (void)y;
-            (void)width;
-            (void)height;
-            (void)red;
-            (void)green;
-            (void)blue;
+            if (pixels_ == nullptr)
+            {
+                return;
+            }
+
+            const int x0 = clampX(static_cast<int>(std::floor(x)));
+            const int y0 = clampY(static_cast<int>(std::floor(y)));
+            const int x1 = clampX(static_cast<int>(std::ceil(x + width)));
+            const int y1 = clampY(static_cast<int>(std::ceil(y + height)));
+            const std::uint32_t color = packColor(red, green, blue);
+
+            for (int yy = y0; yy <= y1; ++yy)
+            {
+                for (int xx = x0; xx <= x1; ++xx)
+                {
+                    putPixel(xx, yy, color);
+                }
+            }
         }
 
         void drawLine(float x1, float y1, float x2, float y2, float red, float green, float blue) override
         {
-            (void)x1;
-            (void)y1;
-            (void)x2;
-            (void)y2;
-            (void)red;
-            (void)green;
-            (void)blue;
+            if (pixels_ == nullptr)
+            {
+                return;
+            }
+
+            drawLineInternal(x1, y1, x2, y2, packColor(red, green, blue));
         }
 
         void drawText(float x, float y, const std::string &text, float red, float green, float blue) override
         {
-            (void)x;
-            (void)y;
-            (void)text;
-            (void)red;
-            (void)green;
-            (void)blue;
+            if (pixels_ == nullptr || text.empty())
+            {
+                return;
+            }
+
+            if (!fontReady_)
+            {
+                int cursorX = static_cast<int>(x);
+                const int baseline = static_cast<int>(y);
+                for (char ch : text)
+                {
+                    if (ch != ' ')
+                    {
+                        fillRect(static_cast<float>(cursorX), static_cast<float>(baseline - 8), 4.0F, 8.0F, red, green, blue);
+                    }
+                    cursorX += 6;
+                }
+                return;
+            }
+
+            const std::uint8_t srcR = toByte(red);
+            const std::uint8_t srcG = toByte(green);
+            const std::uint8_t srcB = toByte(blue);
+
+            float penX = x;
+            const float baseline = y + fontPixelSize_;
+            std::size_t offset = 0;
+
+            while (offset < text.size())
+            {
+                int codepoint = 0;
+                const std::size_t consumed = decodeUtf8Codepoint(text, offset, codepoint);
+                if (consumed == 0)
+                {
+                    break;
+                }
+                offset += consumed;
+
+                const GlyphBitmap &glyph = getGlyph(codepoint);
+                if (!glyph.bitmap.empty() && glyph.width > 0 && glyph.height > 0)
+                {
+                    const int drawX = static_cast<int>(std::lround(penX + static_cast<float>(glyph.xOffset)));
+                    const int drawY = static_cast<int>(std::lround(baseline + static_cast<float>(glyph.yOffset)));
+
+                    for (int gy = 0; gy < glyph.height; ++gy)
+                    {
+                        for (int gx = 0; gx < glyph.width; ++gx)
+                        {
+                            const std::uint8_t alpha = glyph.bitmap[static_cast<std::size_t>(gy * glyph.width + gx)];
+                            if (alpha == 0)
+                            {
+                                continue;
+                            }
+                            blendPixel(drawX + gx, drawY + gy, srcR, srcG, srcB, alpha);
+                        }
+                    }
+                }
+
+                penX += static_cast<float>(glyph.advance);
+                if (offset < text.size())
+                {
+                    int nextCodepoint = 0;
+                    const std::size_t peek = decodeUtf8Codepoint(text, offset, nextCodepoint);
+                    if (peek > 0)
+                    {
+                        penX += fontScale_ * static_cast<float>(stbtt_GetCodepointKernAdvance(&fontInfo_, codepoint, nextCodepoint));
+                    }
+                }
+            }
         }
 
-        void endFrame() override {}
+        void endFrame() override
+        {
+            if (pixels_ == nullptr || window_ == nullptr)
+            {
+                return;
+            }
+
+            ANativeWindow_unlockAndPost(window_);
+            pixels_ = nullptr;
+        }
+
+    private:
+        static std::uint8_t toByte(float value)
+        {
+            const float clamped = std::clamp(value, 0.0F, 1.0F);
+            return static_cast<std::uint8_t>(clamped * 255.0F);
+        }
+
+        static std::uint32_t packColor(float red, float green, float blue)
+        {
+            const std::uint32_t r = static_cast<std::uint32_t>(toByte(red));
+            const std::uint32_t g = static_cast<std::uint32_t>(toByte(green));
+            const std::uint32_t b = static_cast<std::uint32_t>(toByte(blue));
+            return 0xFF000000U | (r << 16U) | (g << 8U) | b;
+        }
+
+        int clampX(int x) const
+        {
+            return std::clamp(x, 0, std::max(0, buffer_.width - 1));
+        }
+
+        int clampY(int y) const
+        {
+            return std::clamp(y, 0, std::max(0, buffer_.height - 1));
+        }
+
+        void putPixel(int x, int y, std::uint32_t color)
+        {
+            if (pixels_ == nullptr)
+            {
+                return;
+            }
+            if (x < 0 || y < 0 || x >= buffer_.width || y >= buffer_.height)
+            {
+                return;
+            }
+            pixels_[y * buffer_.stride + x] = color;
+        }
+
+        void blendPixel(int x, int y, std::uint8_t srcR, std::uint8_t srcG, std::uint8_t srcB, std::uint8_t alpha)
+        {
+            if (pixels_ == nullptr)
+            {
+                return;
+            }
+            if (x < 0 || y < 0 || x >= buffer_.width || y >= buffer_.height)
+            {
+                return;
+            }
+
+            std::uint32_t &dst = pixels_[y * buffer_.stride + x];
+            const std::uint8_t dstR = static_cast<std::uint8_t>((dst >> 16U) & 0xFFU);
+            const std::uint8_t dstG = static_cast<std::uint8_t>((dst >> 8U) & 0xFFU);
+            const std::uint8_t dstB = static_cast<std::uint8_t>(dst & 0xFFU);
+
+            const int a = static_cast<int>(alpha);
+            const std::uint8_t outR = static_cast<std::uint8_t>((srcR * a + dstR * (255 - a)) / 255);
+            const std::uint8_t outG = static_cast<std::uint8_t>((srcG * a + dstG * (255 - a)) / 255);
+            const std::uint8_t outB = static_cast<std::uint8_t>((srcB * a + dstB * (255 - a)) / 255);
+
+            dst = 0xFF000000U | (static_cast<std::uint32_t>(outR) << 16U) |
+                  (static_cast<std::uint32_t>(outG) << 8U) |
+                  static_cast<std::uint32_t>(outB);
+        }
+
+        struct GlyphBitmap
+        {
+            int width = 0;
+            int height = 0;
+            int xOffset = 0;
+            int yOffset = 0;
+            int advance = 0;
+            std::vector<std::uint8_t> bitmap;
+        };
+
+        const GlyphBitmap &getGlyph(int codepoint)
+        {
+            auto it = glyphCache_.find(codepoint);
+            if (it != glyphCache_.end())
+            {
+                return it->second;
+            }
+
+            GlyphBitmap glyph;
+            int advance = 0;
+            int leftSideBearing = 0;
+            stbtt_GetCodepointHMetrics(&fontInfo_, codepoint, &advance, &leftSideBearing);
+            glyph.advance = static_cast<int>(std::lround(fontScale_ * static_cast<float>(advance)));
+            if (glyph.advance <= 0)
+            {
+                glyph.advance = static_cast<int>(std::lround(fontPixelSize_ * 0.5F));
+            }
+
+            unsigned char *bitmap = stbtt_GetCodepointBitmap(&fontInfo_, 0.0F, fontScale_, codepoint,
+                                                             &glyph.width, &glyph.height,
+                                                             &glyph.xOffset, &glyph.yOffset);
+            if (bitmap != nullptr && glyph.width > 0 && glyph.height > 0)
+            {
+                glyph.bitmap.assign(bitmap, bitmap + static_cast<std::size_t>(glyph.width * glyph.height));
+                stbtt_FreeBitmap(bitmap, nullptr);
+            }
+
+            auto [insertedIt, inserted] = glyphCache_.emplace(codepoint, std::move(glyph));
+            (void)inserted;
+            return insertedIt->second;
+        }
+
+        static std::size_t decodeUtf8Codepoint(const std::string &text, std::size_t offset, int &codepoint)
+        {
+            if (offset >= text.size())
+            {
+                return 0;
+            }
+
+            const unsigned char c0 = static_cast<unsigned char>(text[offset]);
+            if ((c0 & 0x80U) == 0)
+            {
+                codepoint = c0;
+                return 1;
+            }
+            if ((c0 & 0xE0U) == 0xC0U && offset + 1 < text.size())
+            {
+                const unsigned char c1 = static_cast<unsigned char>(text[offset + 1]);
+                codepoint = static_cast<int>(((c0 & 0x1FU) << 6U) | (c1 & 0x3FU));
+                return 2;
+            }
+            if ((c0 & 0xF0U) == 0xE0U && offset + 2 < text.size())
+            {
+                const unsigned char c1 = static_cast<unsigned char>(text[offset + 1]);
+                const unsigned char c2 = static_cast<unsigned char>(text[offset + 2]);
+                codepoint = static_cast<int>(((c0 & 0x0FU) << 12U) | ((c1 & 0x3FU) << 6U) | (c2 & 0x3FU));
+                return 3;
+            }
+            if ((c0 & 0xF8U) == 0xF0U && offset + 3 < text.size())
+            {
+                const unsigned char c1 = static_cast<unsigned char>(text[offset + 1]);
+                const unsigned char c2 = static_cast<unsigned char>(text[offset + 2]);
+                const unsigned char c3 = static_cast<unsigned char>(text[offset + 3]);
+                codepoint = static_cast<int>(((c0 & 0x07U) << 18U) | ((c1 & 0x3FU) << 12U) |
+                                             ((c2 & 0x3FU) << 6U) | (c3 & 0x3FU));
+                return 4;
+            }
+
+            codepoint = '?';
+            return 1;
+        }
+
+        void drawLineInternal(float fx1, float fy1, float fx2, float fy2, std::uint32_t color)
+        {
+            int x1 = static_cast<int>(std::lround(fx1));
+            int y1 = static_cast<int>(std::lround(fy1));
+            const int x2 = static_cast<int>(std::lround(fx2));
+            const int y2 = static_cast<int>(std::lround(fy2));
+
+            const int dx = std::abs(x2 - x1);
+            const int sx = x1 < x2 ? 1 : -1;
+            const int dy = -std::abs(y2 - y1);
+            const int sy = y1 < y2 ? 1 : -1;
+            int err = dx + dy;
+
+            while (true)
+            {
+                putPixel(x1, y1, color);
+                if (x1 == x2 && y1 == y2)
+                {
+                    break;
+                }
+
+                const int e2 = 2 * err;
+                if (e2 >= dy)
+                {
+                    err += dy;
+                    x1 += sx;
+                }
+                if (e2 <= dx)
+                {
+                    err += dx;
+                    y1 += sy;
+                }
+            }
+        }
+
+        ANativeWindow *window_ = nullptr;
+        ANativeWindow_Buffer buffer_{};
+        std::uint32_t *pixels_ = nullptr;
+        int width_ = 0;
+        int height_ = 0;
+        stbtt_fontinfo fontInfo_{};
+        std::vector<unsigned char> fontFileData_;
+        std::unordered_map<int, GlyphBitmap> glyphCache_;
+        bool fontReady_ = false;
+        float fontScale_ = 1.0F;
+        float fontPixelSize_ = 16.0F;
+        int fontAscent_ = 0;
+        int fontDescent_ = 0;
+        int fontLineGap_ = 0;
     };
 
-    AppCore g_appCore;
-    NullRenderer g_nullRenderer;
+    struct AndroidRuntime
+    {
+        AndroidRuntime(ANativeActivity *activityIn,
+                       std::filesystem::path scriptPathIn,
+                       std::filesystem::path fontPathIn)
+            : activity(activityIn),
+              scriptPath(std::move(scriptPathIn)),
+              fontPath(std::move(fontPathIn))
+        {
+            running = true;
+        }
+
+        ~AndroidRuntime()
+        {
+            setSoftInputVisible(false);
+
+            running = false;
+            if (renderThread.joinable())
+            {
+                renderThread.join();
+            }
+
+            if (window != nullptr)
+            {
+                ANativeWindow_release(window);
+                window = nullptr;
+            }
+        }
+
+        void onWindowCreated(ANativeWindow *newWindow)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (newWindow != nullptr)
+            {
+                ANativeWindow_acquire(newWindow);
+            }
+            if (window != nullptr)
+            {
+                ANativeWindow_release(window);
+            }
+            window = newWindow;
+            windowDirty = true;
+        }
+
+        void onWindowDestroyed(ANativeWindow *destroyedWindow)
+        {
+            (void)destroyedWindow;
+            std::lock_guard<std::mutex> lock(mutex);
+            if (window != nullptr)
+            {
+                ANativeWindow_release(window);
+                window = nullptr;
+            }
+            windowDirty = true;
+        }
+
+        void onInputQueueCreated(AInputQueue *queue)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            inputQueue = queue;
+            inputQueueDirty = true;
+        }
+
+        void onInputQueueDestroyed(AInputQueue *queue)
+        {
+            (void)queue;
+            std::lock_guard<std::mutex> lock(mutex);
+            inputQueue = nullptr;
+            inputQueueDirty = true;
+        }
+
+        void setSoftInputVisible(bool visible)
+        {
+            if (activity == nullptr || activity->vm == nullptr || activity->clazz == nullptr)
+            {
+                return;
+            }
+
+            JNIEnv *env = nullptr;
+            bool detachThread = false;
+            if (activity->vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK)
+            {
+                if (activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
+                {
+                    return;
+                }
+                detachThread = true;
+            }
+
+            jobject nativeActivity = activity->clazz;
+            jclass nativeActivityClass = env->GetObjectClass(nativeActivity);
+            jmethodID getWindowMethod = env->GetMethodID(nativeActivityClass, "getWindow", "()Landroid/view/Window;");
+            jobject windowObject = env->CallObjectMethod(nativeActivity, getWindowMethod);
+            if (windowObject == nullptr)
+            {
+                env->DeleteLocalRef(nativeActivityClass);
+                if (detachThread)
+                {
+                    activity->vm->DetachCurrentThread();
+                }
+                return;
+            }
+
+            jclass windowClass = env->GetObjectClass(windowObject);
+            jmethodID getDecorViewMethod = env->GetMethodID(windowClass, "getDecorView", "()Landroid/view/View;");
+            jobject decorView = env->CallObjectMethod(windowObject, getDecorViewMethod);
+
+            jstring inputMethodService = env->NewStringUTF("input_method");
+            jmethodID getSystemServiceMethod = env->GetMethodID(nativeActivityClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+            jobject inputMethodManager = env->CallObjectMethod(nativeActivity, getSystemServiceMethod, inputMethodService);
+
+            if (inputMethodManager != nullptr && decorView != nullptr)
+            {
+                jclass immClass = env->GetObjectClass(inputMethodManager);
+                if (visible)
+                {
+                    jmethodID showSoftInputMethod = env->GetMethodID(immClass, "showSoftInput", "(Landroid/view/View;I)Z");
+                    env->CallBooleanMethod(inputMethodManager, showSoftInputMethod, decorView, 0);
+                }
+                else
+                {
+                    jclass viewClass = env->GetObjectClass(decorView);
+                    jmethodID getWindowTokenMethod = env->GetMethodID(viewClass, "getWindowToken", "()Landroid/os/IBinder;");
+                    jobject windowToken = env->CallObjectMethod(decorView, getWindowTokenMethod);
+                    if (windowToken != nullptr)
+                    {
+                        jmethodID hideSoftInputMethod = env->GetMethodID(immClass, "hideSoftInputFromWindow", "(Landroid/os/IBinder;I)Z");
+                        env->CallBooleanMethod(inputMethodManager, hideSoftInputMethod, windowToken, 0);
+                        env->DeleteLocalRef(windowToken);
+                    }
+                    env->DeleteLocalRef(viewClass);
+                }
+                env->DeleteLocalRef(immClass);
+            }
+
+            if (inputMethodManager != nullptr)
+            {
+                env->DeleteLocalRef(inputMethodManager);
+            }
+            env->DeleteLocalRef(inputMethodService);
+            if (decorView != nullptr)
+            {
+                env->DeleteLocalRef(decorView);
+            }
+            env->DeleteLocalRef(windowClass);
+            env->DeleteLocalRef(windowObject);
+            env->DeleteLocalRef(nativeActivityClass);
+
+            if (detachThread)
+            {
+                activity->vm->DetachCurrentThread();
+            }
+
+            softInputVisible = visible;
+        }
+
+        void run()
+        {
+            ALooper *looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
+            if (looper == nullptr)
+            {
+                __android_log_print(ANDROID_LOG_ERROR, "GUI_CPP", "Failed to prepare looper");
+                return;
+            }
+
+            if (!fontPath.empty())
+            {
+                renderer.setFontPath(fontPath, 16.0F);
+            }
+
+            const bool initialized = appCore.initialize(&renderer, scriptPath);
+            if (!initialized)
+            {
+                __android_log_print(ANDROID_LOG_ERROR, "GUI_CPP", "Core init failed: %s", appCore.lastError().c_str());
+            }
+            else
+            {
+                __android_log_print(ANDROID_LOG_INFO, "GUI_CPP", "Android runtime loop started");
+            }
+
+            auto previous = std::chrono::steady_clock::now();
+            AInputQueue *attachedQueue = nullptr;
+            ANativeWindow *activeWindow = nullptr;
+
+            while (running)
+            {
+                inputState.textInput.clear();
+                inputState.backspacePressed = false;
+                inputState.enterPressed = false;
+                inputState.toggleThemePressed = false;
+
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    if (inputQueueDirty)
+                    {
+                        if (attachedQueue != nullptr)
+                        {
+                            AInputQueue_detachLooper(attachedQueue);
+                        }
+                        attachedQueue = inputQueue;
+                        if (attachedQueue != nullptr)
+                        {
+                            AInputQueue_attachLooper(attachedQueue, looper, kLooperInputId, nullptr, nullptr);
+                        }
+                        inputQueueDirty = false;
+                    }
+
+                    if (windowDirty)
+                    {
+                        activeWindow = window;
+                        renderer.setWindow(activeWindow);
+                        if (activeWindow != nullptr)
+                        {
+                            appCore.onResize(ANativeWindow_getWidth(activeWindow), ANativeWindow_getHeight(activeWindow));
+                        }
+                        windowDirty = false;
+                    }
+                }
+
+                int ident = 0;
+                int events = 0;
+                while ((ident = ALooper_pollOnce(0, nullptr, &events, nullptr)) >= 0)
+                {
+                    if (ident == kLooperInputId && attachedQueue != nullptr)
+                    {
+                        AInputEvent *event = nullptr;
+                        while (AInputQueue_getEvent(attachedQueue, &event) >= 0)
+                        {
+                            if (AInputQueue_preDispatchEvent(attachedQueue, event))
+                            {
+                                continue;
+                            }
+
+                            int handled = 0;
+                            if (event != nullptr && AInputEvent_getType(event) == AINPUT_EVENT_TYPE_MOTION)
+                            {
+                                const int action = AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK;
+                                if (action == AMOTION_EVENT_ACTION_DOWN || action == AMOTION_EVENT_ACTION_MOVE)
+                                {
+                                    touchDown = true;
+                                    touchX = AMotionEvent_getX(event, 0);
+                                    touchY = AMotionEvent_getY(event, 0);
+                                    handled = 1;
+                                }
+                                else if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_CANCEL)
+                                {
+                                    touchDown = false;
+                                    touchX = AMotionEvent_getX(event, 0);
+                                    touchY = AMotionEvent_getY(event, 0);
+                                    handled = 1;
+                                }
+                            }
+                            else if (event != nullptr && AInputEvent_getType(event) == AINPUT_EVENT_TYPE_KEY)
+                            {
+                                const int action = AKeyEvent_getAction(event);
+                                if (action == AKEY_EVENT_ACTION_DOWN)
+                                {
+                                    const int keycode = AKeyEvent_getKeyCode(event);
+                                    const int metaState = AKeyEvent_getMetaState(event);
+
+                                    if (keycode == AKEYCODE_DEL)
+                                    {
+                                        inputState.backspacePressed = true;
+                                        handled = 1;
+                                    }
+                                    else if (keycode == AKEYCODE_ENTER)
+                                    {
+                                        inputState.enterPressed = true;
+                                        handled = 1;
+                                    }
+                                    else if (keycode == AKEYCODE_T)
+                                    {
+                                        inputState.toggleThemePressed = true;
+                                        handled = 1;
+                                    }
+                                    else
+                                    {
+                                        const std::string text = keycodeToText(keycode, metaState);
+                                        if (!text.empty())
+                                        {
+                                            inputState.textInput += text;
+                                            handled = 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            AInputQueue_finishEvent(attachedQueue, event, handled);
+                        }
+                    }
+                }
+
+                inputState.mouseX = touchX;
+                inputState.mouseY = touchY;
+                inputState.mouseDown = touchDown;
+
+                const auto now = std::chrono::steady_clock::now();
+                const float deltaSeconds = std::chrono::duration<float>(now - previous).count();
+                previous = now;
+
+                if (activeWindow != nullptr && initialized)
+                {
+                    appCore.tick(deltaSeconds, inputState);
+
+                    const bool wantSoftInput = appCore.textInputActive();
+                    if (wantSoftInput != softInputVisible)
+                    {
+                        setSoftInputVisible(wantSoftInput);
+                    }
+                }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            }
+
+            if (attachedQueue != nullptr)
+            {
+                AInputQueue_detachLooper(attachedQueue);
+            }
+        }
+
+        ANativeActivity *activity = nullptr;
+        std::filesystem::path scriptPath;
+        std::filesystem::path fontPath;
+        std::mutex mutex;
+        ANativeWindow *window = nullptr;
+        bool windowDirty = false;
+        AInputQueue *inputQueue = nullptr;
+        bool inputQueueDirty = false;
+        bool running = false;
+        std::thread renderThread;
+        AndroidSoftwareRenderer renderer;
+        AppCore appCore;
+        InputState inputState;
+        bool touchDown = false;
+        float touchX = 0.0F;
+        float touchY = 0.0F;
+        bool softInputVisible = false;
+    };
+
+    AndroidRuntime *g_runtime = nullptr;
+
+    void onNativeWindowCreated(ANativeActivity *activity, ANativeWindow *window)
+    {
+        (void)activity;
+        if (g_runtime != nullptr)
+        {
+            g_runtime->onWindowCreated(window);
+        }
+    }
+
+    void onNativeWindowDestroyed(ANativeActivity *activity, ANativeWindow *window)
+    {
+        (void)activity;
+        if (g_runtime != nullptr)
+        {
+            g_runtime->onWindowDestroyed(window);
+        }
+    }
+
+    void onInputQueueCreated(ANativeActivity *activity, AInputQueue *queue)
+    {
+        (void)activity;
+        if (g_runtime != nullptr)
+        {
+            g_runtime->onInputQueueCreated(queue);
+        }
+    }
+
+    void onInputQueueDestroyed(ANativeActivity *activity, AInputQueue *queue)
+    {
+        (void)activity;
+        if (g_runtime != nullptr)
+        {
+            g_runtime->onInputQueueDestroyed(queue);
+        }
+    }
+
+    void onDestroy(ANativeActivity *activity)
+    {
+        (void)activity;
+        if (g_runtime != nullptr)
+        {
+            delete g_runtime;
+            g_runtime = nullptr;
+        }
+    }
 } // namespace
 
 extern "C" void ANativeActivity_onCreate(ANativeActivity *activity, void *savedState, size_t savedStateSize)
@@ -170,13 +1016,25 @@ extern "C" void ANativeActivity_onCreate(ANativeActivity *activity, void *savedS
     (void)savedStateSize;
 
     const std::filesystem::path scriptPath = prepareScriptPath(activity);
-    const bool initialized = g_appCore.initialize(&g_nullRenderer, scriptPath);
-    if (initialized)
+    if (scriptPath.empty())
     {
-        __android_log_print(ANDROID_LOG_INFO, "GUI_CPP", "Android NativeActivity scaffold initialized (core wired)");
+        __android_log_print(ANDROID_LOG_ERROR, "GUI_CPP", "Script preparation failed; runtime not started");
+        return;
     }
-    else
+
+    const std::filesystem::path fontPath = prepareFontPath(activity);
+    if (fontPath.empty())
     {
-        __android_log_print(ANDROID_LOG_ERROR, "GUI_CPP", "Core init failed: %s", g_appCore.lastError().c_str());
+        __android_log_print(ANDROID_LOG_ERROR, "GUI_CPP", "Font preparation failed; runtime will use fallback glyph blocks");
     }
+
+    g_runtime = new AndroidRuntime(activity, scriptPath, fontPath);
+    activity->callbacks->onNativeWindowCreated = onNativeWindowCreated;
+    activity->callbacks->onNativeWindowDestroyed = onNativeWindowDestroyed;
+    activity->callbacks->onInputQueueCreated = onInputQueueCreated;
+    activity->callbacks->onInputQueueDestroyed = onInputQueueDestroyed;
+    activity->callbacks->onDestroy = onDestroy;
+
+    g_runtime->renderThread = std::thread([runtime = g_runtime]()
+                                          { runtime->run(); });
 }

@@ -33,6 +33,16 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(lua)
 
+FetchContent_Declare(
+    stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG master
+)
+FetchContent_GetProperties(stb)
+if(NOT stb_POPULATED)
+    FetchContent_Populate(stb)
+endif()
+
 if(TARGET lua_static)
     set(LUA_TARGET lua_static)
 elseif(TARGET lua)
@@ -43,6 +53,7 @@ endif()
 
 target_include_directories(guicpp_native PRIVATE
     ../../../../../native
+    ${stb_SOURCE_DIR}
 )
 
 find_library(log-lib log)
