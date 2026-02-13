@@ -404,7 +404,7 @@ namespace
             if (!fontReady_)
             {
                 int cursorX = static_cast<int>(pxX);
-                const int baseline = static_cast<int>(pxY);
+                const int baseline = static_cast<int>(pxY + std::max(1.0F, std::floor(8.0F * uiScale_)));
                 for (char ch : text)
                 {
                     if (ch != ' ')
@@ -435,7 +435,7 @@ namespace
             const std::uint8_t srcB = toByte(blue);
 
             float penX = pxX;
-            const float baseline = pxY + fontPixelSizePx_;
+            const float baseline = pxY + (fontScale_ * static_cast<float>(fontAscent_));
             std::size_t offset = 0;
 
             while (offset < text.size())
