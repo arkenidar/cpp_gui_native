@@ -1,0 +1,21 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Configure+Build GUI C++ (Debug)",
+            "type": "shell",
+            "command": "cmake -S . -B build-debug -G Ninja -DGUI_FETCH_DEPS=OFF -DCMAKE_BUILD_TYPE=Debug && cmake --build build-debug",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Configure+Build GUI C++ (Release)",
+            "type": "shell",
+            "command": "cmake -S . -B build -G Ninja -DGUI_FETCH_DEPS=OFF -DCMAKE_BUILD_TYPE=Release && cmake --build build",
+            "problemMatcher": []
+        }
+    ]
+}
