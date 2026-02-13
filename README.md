@@ -90,5 +90,12 @@ cmake --build build
 - Fallback remains available (system fonts, then SDL debug text) if the bundled font is missing.
 - If you redistribute the project, verify font licensing and replace `UiFont.ttf` with your preferred redistributable font if needed.
 
+## Android / NDK scaffold
+- A minimal Android NativeActivity scaffold is available under [android](android).
+- Open [android](android) in Android Studio and let Gradle sync.
+- Build/run the `app` module (arm64-v8a).
+- Native bootstrap target is defined in [android/app/src/main/cpp/CMakeLists.txt](android/app/src/main/cpp/CMakeLists.txt).
+- Current scaffold is intentionally minimal (launch + native library wiring) and ready for incremental integration of the shared core.
+
 ## Next step
 Add renderer abstraction improvements and optional GPU path while preserving `IRenderer` API.
