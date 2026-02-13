@@ -22,6 +22,7 @@ state.layout = {
 
 state.design = {
     side_pad = 18.0,
+    top_pad = 22.0,
     bottom_pad = 48.0,
     gap = 14.0,
     edit_h = 44.0,
@@ -184,30 +185,31 @@ end
 local function apply_auto_layout(widgets, layout, design)
     local side_pad = design.side_pad
     local control_w = layout.w - (side_pad * 2.0)
-
-    local chip = widgets.toggle_chip
-    chip.x = side_pad
-    chip.w = control_w
-    chip.h = design.chip_h
-    chip.y = layout.h - design.bottom_pad - chip.h
-
-    local button = widgets.button
-    button.x = side_pad
-    button.w = control_w
-    button.h = design.button_h
-    button.y = chip.y - design.gap - button.h
-
-    local edit2 = widgets.editbox2
-    edit2.x = side_pad
-    edit2.w = control_w
-    edit2.h = design.edit_h
-    edit2.y = button.y - design.gap - edit2.h - design.label_offset
+    local top = design.top_pad
 
     local edit1 = widgets.editbox
     edit1.x = side_pad
     edit1.w = control_w
     edit1.h = design.edit_h
-    edit1.y = edit2.y - design.gap - edit1.h - design.label_offset
+    edit1.y = top + design.label_offset
+
+    local edit2 = widgets.editbox2
+    edit2.x = side_pad
+    edit2.w = control_w
+    edit2.h = design.edit_h
+    edit2.y = edit1.y + edit1.h + design.gap + design.label_offset
+
+    local button = widgets.button
+    button.x = side_pad
+    button.w = control_w
+    button.h = design.button_h
+    button.y = edit2.y + edit2.h + design.gap + design.label_offset
+
+    local chip = widgets.toggle_chip
+    chip.x = side_pad
+    chip.w = control_w
+    chip.h = design.chip_h
+    chip.y = button.y + button.h + design.gap
 end
 
 local function update_button(button, dt, input, theme, design, down_edge, up_edge, over_button, on_click)
@@ -448,11 +450,28 @@ function update(dt, input)
         (not editbox.focused) and (not editbox2.focused)
 
     if can_drag then
-        state.x = input.mouse_x
-        state.y = input.mouse_y
+        local circle_min_y = toggle_chip.y + toggle_chip.h + state.design.gap + state.radius
+        local circle_max_y = state.layout.h - state.design.bottom_pad - state.radius
+        if circle_max_y < circle_min_y then
+            circle_max_y = circle_min_y
+        end
+
+        state.x = math.max(state.radius, math.min(state.layout.w - state.radius, input.mouse_x))
+        state.y = math.max(circle_min_y, math.min(circle_max_y, input.mouse_y))
     else
-        state.x = 260.0 + math.sin(state.t * 1.2) * 64.0
-        state.y = 180.0 + math.cos(state.t * 1.0) * 44.0
+        local circle_min_y = toggle_chip.y + toggle_chip.h + state.design.gap + state.radius
+        local circle_max_y = state.layout.h - state.design.bottom_pad - state.radius
+        if circle_max_y < circle_min_y then
+            circle_max_y = circle_min_y
+        end
+
+        local center_x = state.layout.w * 0.5
+        local center_y = (circle_min_y + circle_max_y) * 0.5
+        local amp_x = math.min(64.0, state.layout.w * 0.20)
+        local amp_y = math.max(0.0, (circle_max_y - circle_min_y) * 0.35)
+
+        state.x = center_x + math.sin(state.t * 1.2) * amp_x
+        state.y = center_y + math.cos(state.t * 1.0) * amp_y
     end
 
     state.bg_r = theme.bg_r
