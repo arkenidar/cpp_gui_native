@@ -44,13 +44,24 @@ endif()
 
 find_package(sol2 CONFIG QUIET)
 if(NOT sol2_FOUND)
+  find_path(SOL2_INCLUDE_DIR NAMES sol/sol.hpp)
+  if(SOL2_INCLUDE_DIR)
+    if(NOT TARGET sol2::sol2_header_only)
+      add_library(sol2::sol2_header_only INTERFACE IMPORTED)
+      target_include_directories(sol2::sol2_header_only INTERFACE ${SOL2_INCLUDE_DIR})
+    endif()
+    set(sol2_FOUND TRUE)
+  endif()
+endif()
+
+if(NOT sol2_FOUND)
   if(NOT GUI_FETCH_DEPS)
     message(FATAL_ERROR "sol2 not found and GUI_FETCH_DEPS=OFF")
   endif()
   FetchContent_Declare(
     sol2
     GIT_REPOSITORY https://github.com/ThePhD/sol2.git
-    GIT_TAG v3.3.1
+    GIT_TAG v3.5.0
   )
   FetchContent_MakeAvailable(sol2)
 endif()
