@@ -13,7 +13,9 @@ Mobile-first native UI MVP: iterate fast on desktop (SDL + Lua hot-reload) and c
 - Shared app core loop
 - Lua scripting integration via sol2
 - Script hot-reload polling (`assets/scripts/main.lua`)
-- SDL renderer path only
+- Android NativeActivity host (arm64-v8a)
+- Android software renderer path with bundled TTF text rendering
+- Android touch + text input (OSK) integration
 
 ## Prerequisites
 Install dependencies for your OS, then use the same CMake build flow.
@@ -91,13 +93,32 @@ cmake --build build
 - If you redistribute the project, verify font licensing and replace `UiFont.ttf` with your preferred redistributable font if needed.
 
 ## Android / NDK scaffold
-- A minimal Android NativeActivity scaffold is available under [android](android).
+- Android NativeActivity app is available under [android](android).
 - Open [android](android) in Android Studio and let Gradle sync.
 - In Android Studio, use the Gradle Wrapper from the project (do not force a local Gradle 9+ install).
 - Build/run the `app` module (arm64-v8a).
 - Native bootstrap target is defined in [android/app/src/main/cpp/CMakeLists.txt](android/app/src/main/cpp/CMakeLists.txt).
-- Shared core wiring is now connected incrementally (`AppCore` linked into Android target) using a temporary Android script-engine stub in [android/app/src/main/cpp/ScriptEngineStub.cpp](android/app/src/main/cpp/ScriptEngineStub.cpp).
-- Current scaffold is intentionally minimal and ready for the next pass: replacing the stub with real Lua/sol2 runtime on Android.
+- Shared core wiring uses the real `AppCore` + `ScriptEngine` Lua/sol2 path (no Android script-engine stub).
+- Android runtime currently includes:
+	- asset extraction for [assets/scripts/main.lua](assets/scripts/main.lua) and [assets/fonts/UiFont.ttf](assets/fonts/UiFont.ttf)
+	- touch/pointer input + text input/Backspace/Enter handling
+	- focus-driven soft keyboard visibility
+	- density-normalized UI scaling for closer desktop/device parity
+	- corrected Android renderer channel mapping for color parity
+
+### Android CLI flow (MSYS2/bash)
+```bash
+export JAVA_HOME='/c/Program Files/Eclipse Adoptium/jdk-17.0.18.8-hotspot'
+export PATH="$JAVA_HOME/bin:$PATH"
+cd /c/src/gui_skia/android
+./gradlew assembleDebug installDebug --console=plain
+```
+
+Launch via adb:
+```bash
+/c/Users/$USER/AppData/Local/Android/Sdk/platform-tools/adb.exe \
+	shell am start -n com.guicpp.app/android.app.NativeActivity
+```
 
 ### Android text input / OSK note (SDL + NDK)
 - Yes, for text widgets on Android you should use the on-screen keyboard (OSK).
@@ -107,9 +128,9 @@ cmake --build build
 - If you add custom caret/selection UX, also update text-input area as needed (`SDL_SetTextInputArea`) so IME behavior stays correct.
 
 ### Immediate next Android pass
-- Replace [android/app/src/main/cpp/ScriptEngineStub.cpp](android/app/src/main/cpp/ScriptEngineStub.cpp) with real Lua/sol2-backed `ScriptEngine` on Android.
-- Add Android asset loading for `assets/scripts/main.lua` and related resources.
-- Introduce SDL Android host path and wire focus-driven OSK behavior for text widgets.
+- Improve IME composition/selection behavior for richer text editing.
+- Optimize software renderer performance and frame pacing.
+- Add optional GPU-backed Android renderer while preserving `IRenderer` API.
 
 ## Next step
 Add renderer abstraction improvements and optional GPU path while preserving `IRenderer` API.
