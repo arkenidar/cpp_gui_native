@@ -414,10 +414,6 @@ function update(dt, input)
     editbox.cursor_t = editbox.cursor_t + dt
     editbox2.cursor_t = editbox2.cursor_t + dt
 
-    if input.toggle_theme_pressed and (not any_text_widget_focused(state.widgets)) then
-        state.theme_dark = not state.theme_dark
-    end
-
     state.text_input_active = any_text_widget_focused(state.widgets)
 
     apply_auto_layout(state.widgets, state.layout, state.design)
@@ -444,6 +440,8 @@ function update(dt, input)
             state.circle_filled = not state.circle_filled
         end)
     local chip_render = update_toggle_chip(toggle_chip, input, theme, state.design, down_edge, up_edge, over_chip)
+
+    state.theme_dark = toggle_chip.on
 
     local can_drag = input.mouse_down and mouse_valid and (not over_edit) and (not over_edit2) and (not over_button) and
         (not over_chip) and

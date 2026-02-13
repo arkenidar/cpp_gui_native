@@ -892,11 +892,6 @@ namespace
                                         inputState.enterPressed = true;
                                         handled = 1;
                                     }
-                                    else if (keycode == AKEYCODE_T)
-                                    {
-                                        inputState.toggleThemePressed = true;
-                                        handled = 1;
-                                    }
                                     else
                                     {
                                         const std::string text = keycodeToText(keycode, metaState);

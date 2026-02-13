@@ -155,10 +155,6 @@ int main(int argc, char **argv)
                 {
                     inputState.enterPressed = true;
                 }
-                else if (event.key.key == SDLK_T)
-                {
-                    inputState.toggleThemePressed = true;
-                }
                 break;
             case SDL_EVENT_TEXT_INPUT:
                 if (event.text.text[0] != '\0')
