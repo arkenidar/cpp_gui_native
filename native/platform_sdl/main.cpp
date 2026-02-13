@@ -117,6 +117,10 @@ int main(int argc, char **argv)
     InputState inputState;
     std::string lastReportedError;
     bool textInputActive = false;
+    bool hasActiveTouch = false;
+    SDL_FingerID activeFinger = 0;
+    float touchX = 0.0F;
+    float touchY = 0.0F;
 
     std::uint64_t previousCounter = SDL_GetTicks();
 
@@ -162,6 +166,42 @@ int main(int argc, char **argv)
                     inputState.textInput += event.text.text;
                 }
                 break;
+            case SDL_EVENT_FINGER_DOWN:
+            {
+                if (!hasActiveTouch)
+                {
+                    hasActiveTouch = true;
+                    activeFinger = event.tfinger.fingerID;
+                }
+
+                if (hasActiveTouch && event.tfinger.fingerID == activeFinger)
+                {
+                    int windowWidth = 0;
+                    int windowHeight = 0;
+                    SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+                    touchX = event.tfinger.x * static_cast<float>(windowWidth);
+                    touchY = event.tfinger.y * static_cast<float>(windowHeight);
+                }
+                break;
+            }
+            case SDL_EVENT_FINGER_MOTION:
+            {
+                if (hasActiveTouch && event.tfinger.fingerID == activeFinger)
+                {
+                    int windowWidth = 0;
+                    int windowHeight = 0;
+                    SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+                    touchX = event.tfinger.x * static_cast<float>(windowWidth);
+                    touchY = event.tfinger.y * static_cast<float>(windowHeight);
+                }
+                break;
+            }
+            case SDL_EVENT_FINGER_UP:
+                if (hasActiveTouch && event.tfinger.fingerID == activeFinger)
+                {
+                    hasActiveTouch = false;
+                }
+                break;
             default:
                 break;
             }
@@ -172,9 +212,18 @@ int main(int argc, char **argv)
         const SDL_MouseButtonFlags mouseButtons = SDL_GetMouseState(&mouseX, &mouseY);
         const SDL_WindowFlags windowFlags = SDL_GetWindowFlags(window);
         const bool hasMouseFocus = (windowFlags & SDL_WINDOW_MOUSE_FOCUS) != 0;
-        inputState.mouseX = mouseX;
-        inputState.mouseY = mouseY;
-        inputState.mouseDown = hasMouseFocus && ((mouseButtons & SDL_BUTTON_LMASK) != 0);
+        if (hasActiveTouch)
+        {
+            inputState.mouseX = touchX;
+            inputState.mouseY = touchY;
+            inputState.mouseDown = true;
+        }
+        else
+        {
+            inputState.mouseX = mouseX;
+            inputState.mouseY = mouseY;
+            inputState.mouseDown = hasMouseFocus && ((mouseButtons & SDL_BUTTON_LMASK) != 0);
+        }
 
         const std::uint64_t currentCounter = SDL_GetTicks();
         const float deltaSeconds = static_cast<float>(currentCounter - previousCounter) / 1000.0F;
